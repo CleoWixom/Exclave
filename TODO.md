@@ -1,28 +1,51 @@
-# TODO: Автовыбор прокси по типу сети + автопинг + тэги
+# TODO: Автовыбор прокси по типу сети + автопинг + ключевые слова
 
 ## Контекст и существующая инфраструктура
 
 | Компонент | Файл | Что уже есть |
 |---|---|---|
-| `RuleEntity.networkType` | `database/RuleEntity.kt` | Поле для маршрутизации по типу сети (`wifi`, `data`, ...) |
-| `DefaultNetworkListener` | `utils/DefaultNetworkListener.kt` | `NetworkCallback` — отслеживает смену сети, читает SSID (Android 12+) |
-| `ProxyEntity.ping` | `database/ProxyEntity.kt` | Поле задержки; `status` (0=untested, 1=ok, 3=error) |
-| `V2RayTestInstance` | `bg/test/V2RayTestInstance.kt` | `doTest()` — пингует один профиль через `Libexclavecore.urlTest()` |
-| `ConfigBuilder.networkType` | `fmt/ConfigBuilder.kt` | Передаёт `networkType` в конфиг ядра (V2Ray/sing-box) |
-| Ping UI | `ui/ConfigurationFragment.kt` | `urlTest()` — параллельный пинг всей группы (6 воркеров) |
+| `AbstractBean.name` | `fmt/AbstractBean.java` | Имя профиля (например `⚡ LTE Россия`), поле `name` |
+| `ProxyEntity.displayName()` | `database/ProxyEntity.kt` | Возвращает `bean.name` или `host:port` |
+| `ProxyEntity.displayType()` | `database/ProxyEntity.kt` | Строка протокола (например `VLESS / TCP / REALITY`) |
+| `ProxyEntity.ping` / `status` | `database/ProxyEntity.kt` | Задержка и статус теста |
+| `V2RayTestInstance.doTest()` | `bg/test/V2RayTestInstance.kt` | Пинг через `Libexclavecore.urlTest()` |
+| Поиск по имени в UI | `ui/ConfigurationFragment.kt:1276` | `displayName().lowercase().contains(lower)` |
+| `DefaultNetworkListener` | `utils/DefaultNetworkListener.kt` | `NetworkCallback` — отслеживает смену сети |
+| `RuleEntity.networkType` | `database/RuleEntity.kt` | Маршрутизация по типу сети (`wifi`, `data`, ...) |
 
-**Чего не хватает:**
-1. Тэгирование профилей внутри подписки для разных типов сети
-2. Автопинг кандидатов перед подключением
-3. Автовыбор лучшего профиля по тэгу при смене сети
+**Как выглядят профили в подписке (скриншот):**
+```
+⚡ LTE Россия          ← bean.name (displayName)
+При глушении LTE/4G   ← вторая строка того же name (многострочное имя) или отдельный рендер
+```
+```
+Армения               ← bean.name
+VLESS / TCP / REALITY | JSON  ← displayType()
+```
+
+**Фильтрация должна работать по `displayName()` и `displayType()`** — теми же строками, что уже используются в поиске (`ConfigurationFragment.kt:1276`).
 
 ---
 
 ## Требования
 
-- Из **одной подписки** можно задать разные наборы прокси для Wi-Fi и мобильной сети через **тэги**
-- Перед подключением — **автопинг** подходящих кандидатов через прокси (`V2RayTestInstance`)
-- Автоматический выбор **лучшего по пингу** профиля с нужным тэгом при смене типа сети
+- Из **одной подписки** настроить разные наборы прокси для Wi-Fi и мобильной сети через **ключевые слова**
+- Слова проверяются по `displayName()` и `displayType()` профиля (без учёта регистра)
+- Перед подключением — **автопинг** подходящих кандидатов
+- Автоматический выбор **лучшего по пингу** профиля при смене типа сети
+
+---
+
+## Пример конфигурации
+
+```
+Ключевые слова для Wi-Fi:  "Армения, Латвия, Швеция, Gaming"
+Ключевые слова для Mobile: "LTE, При глушении"
+```
+
+При подключении к Wi-Fi — среди профилей группы выбираются те, у которых
+`displayName()` или `displayType()` содержит хотя бы одно из слов (`Армения`, `Латвия`, `Швеция`, `Gaming`).
+При мобильной сети — профили, у которых имя содержит `LTE` или `При глушении`.
 
 ---
 
@@ -30,90 +53,33 @@
 
 ---
 
-### 1. Тэги профилей
+### 1. Константы и ключи
 
-#### 1.1 Поле `networkTags` в `ProxyEntity`
-**Файл:** `app/src/main/java/io/nekohasekai/sagernet/database/ProxyEntity.kt`
-
-Добавить поле:
-```kotlin
-@ColumnInfo(defaultValue = "") var networkTags: Set<String> = emptySet()
-```
-
-Конвертер `Set<String>` уже есть (`StringCollectionConverter`).
-
-Миграция БД — добавить в `database/Migrations.kt`:
-```kotlin
-// версия N+1
-database.execSQL("ALTER TABLE proxy_entities ADD COLUMN networkTags TEXT NOT NULL DEFAULT ''")
-```
-
-Смысл тэгов: произвольные строки, которые пользователь задаёт вручную.  
-Зарезервированные значения (рекомендуемые): `wifi`, `mobile`.  
-Можно также: `home`, `work`, `roaming` — любые строки.
-
-#### 1.2 UI — редактирование тэгов профиля
-**Файл:** `app/src/main/java/io/nekohasekai/sagernet/ui/profile/ProfileSettingsActivity.kt`  
-**Файл:** `app/src/main/res/xml/name_preferences.xml`
-
-Добавить `MultiSelectListPreference` или поле ввода через запятую (если тэги произвольные):
-
-```xml
-<EditTextPreference
-    app:key="networkTags"
-    app:title="@string/network_tags"
-    app:summary="@string/network_tags_summary"
-    app:icon="@drawable/ic_baseline_label_24" />
-```
-
-Формат ввода: `wifi, mobile` → парсить по запятой в `Set<String>`.
-
-Строки для `strings.xml`:
-```xml
-<string name="network_tags">Network tags</string>
-<string name="network_tags_summary">Tags for auto-selection by network type (e.g. wifi, mobile)</string>
-```
-
-#### 1.3 Фильтрация по тэгу в БД
-**Файл:** `app/src/main/java/io/nekohasekai/sagernet/database/ProxyEntity.kt` (DAO)
-
-```kotlin
-// Получить все профили группы с заданным тэгом
-@Query("SELECT * FROM proxy_entities WHERE groupId = :groupId")
-fun getByGroup(groupId: Long): List<ProxyEntity>
-// Фильтрацию по тэгу делать in-memory через:
-// entities.filter { it.networkTags.contains(tag) }
-```
-
-> SQLite не поддерживает поиск внутри JSON-сериализованных Set, поэтому фильтрация in-memory.
-
----
-
-### 2. Конфигурация автовыбора
-
-#### 2.1 Ключи в `Constants.kt`
 **Файл:** `app/src/main/java/io/nekohasekai/sagernet/Constants.kt`
 
 ```kotlin
-const val AUTO_SELECT_BY_NETWORK = "autoSelectByNetwork"   // включить фичу
-const val WIFI_PROXY_TAG         = "wifiProxyTag"          // тэг для Wi-Fi
-const val MOBILE_PROXY_TAG       = "mobileProxyTag"        // тэг для Mobile
-const val AUTO_PING_BEFORE_CONNECT = "autoPingBeforeConnect" // пинговать перед выбором
-const val AUTO_PING_TIMEOUT      = "autoPingTimeout"       // таймаут пинга (мс), default 3000
-const val AUTO_PING_CONCURRENCY  = "autoPingConcurrency"   // параллельность, default 4
-const val AUTO_CONNECT           = "autoConnect"           // автоподключение при старте/смене сети
-const val STOP_ON_NETWORK_LOSS   = "stopOnNetworkLoss"     // останавливать при потере сети
+const val AUTO_SELECT_BY_NETWORK    = "autoSelectByNetwork"     // включить фичу
+const val WIFI_KEYWORDS             = "wifiKeywords"            // ключевые слова для Wi-Fi (через запятую)
+const val MOBILE_KEYWORDS           = "mobileKeywords"          // ключевые слова для Mobile
+const val AUTO_PING_BEFORE_CONNECT  = "autoPingBeforeConnect"   // пинговать перед выбором
+const val AUTO_PING_TIMEOUT         = "autoPingTimeout"         // таймаут мс, default 3000
+const val AUTO_PING_CONCURRENCY     = "autoPingConcurrency"     // параллельность, default 4
+const val AUTO_CONNECT              = "autoConnect"             // автоподключение
+const val STOP_ON_NETWORK_LOSS      = "stopOnNetworkLoss"       // стоп при потере сети
 ```
 
-#### 2.2 Поля в `DataStore.kt`
+---
+
+### 2. Поля в `DataStore.kt`
+
 **Файл:** `app/src/main/java/io/nekohasekai/sagernet/database/DataStore.kt`
 
 ```kotlin
 var autoSelectByNetwork   by profileCacheStore.boolean(Key.AUTO_SELECT_BY_NETWORK)
-var wifiProxyTag          by profileCacheStore.string(Key.WIFI_PROXY_TAG)    // default: "wifi"
-var mobileProxyTag        by profileCacheStore.string(Key.MOBILE_PROXY_TAG)  // default: "mobile"
+var wifiKeywords          by profileCacheStore.string(Key.WIFI_KEYWORDS)    // default: ""
+var mobileKeywords        by profileCacheStore.string(Key.MOBILE_KEYWORDS)  // default: "LTE"
 var autoPingBeforeConnect by profileCacheStore.boolean(Key.AUTO_PING_BEFORE_CONNECT)
-var autoPingTimeout       by profileCacheStore.int(Key.AUTO_PING_TIMEOUT)    // default: 3000
+var autoPingTimeout       by profileCacheStore.int(Key.AUTO_PING_TIMEOUT)   // default: 3000
 var autoPingConcurrency   by profileCacheStore.int(Key.AUTO_PING_CONCURRENCY) // default: 4
 var autoConnect           by profileCacheStore.boolean(Key.AUTO_CONNECT)
 var stopOnNetworkLoss     by profileCacheStore.boolean(Key.STOP_ON_NETWORK_LOSS)
@@ -121,7 +87,48 @@ var stopOnNetworkLoss     by profileCacheStore.boolean(Key.STOP_ON_NETWORK_LOSS)
 
 ---
 
-### 3. Определение типа текущей сети
+### 3. Вспомогательная функция фильтрации по ключевым словам
+
+**Новый файл:** `app/src/main/java/io/nekohasekai/sagernet/bg/KeywordFilter.kt`
+
+```kotlin
+object KeywordFilter {
+
+    /**
+     * Разбирает строку ключевых слов, разделённых запятой.
+     * Пример: "LTE, При глушении, Россия" → ["lte", "при глушении", "россия"]
+     */
+    fun parseKeywords(raw: String): List<String> =
+        raw.split(",").map { it.trim().lowercase() }.filter { it.isNotEmpty() }
+
+    /**
+     * Возвращает true, если хотя бы одно ключевое слово содержится
+     * в displayName() ИЛИ displayType() профиля (без учёта регистра).
+     *
+     * Если keywords пустой — матчит ВСЕ профили (нет ограничений).
+     */
+    fun matches(proxy: ProxyEntity, keywords: List<String>): Boolean {
+        if (keywords.isEmpty()) return true
+        val name = proxy.displayName().lowercase()
+        val type = proxy.displayType().lowercase()
+        return keywords.any { kw -> name.contains(kw) || type.contains(kw) }
+    }
+
+    /**
+     * Фильтрует список профилей по ключевым словам.
+     */
+    fun filter(proxies: List<ProxyEntity>, rawKeywords: String): List<ProxyEntity> {
+        val keywords = parseKeywords(rawKeywords)
+        return proxies.filter { matches(it, keywords) }
+    }
+}
+```
+
+> Переиспользует ту же логику что в `ConfigurationFragment.kt:1276` — поиск по `displayName`/`displayType`.
+
+---
+
+### 4. Определение текущего типа сети
 
 **Файл:** `app/src/main/java/io/nekohasekai/sagernet/utils/DefaultNetworkListener.kt`
 
@@ -134,7 +141,7 @@ var currentNetworkType: NetworkType = NetworkType.UNKNOWN
     private set
 ```
 
-Заполнять в callback'е `onCapabilitiesChanged`:
+Заполнять в `onCapabilitiesChanged`:
 
 ```kotlin
 override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
@@ -143,7 +150,7 @@ override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) 
         caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> NetworkType.MOBILE
         else -> NetworkType.OTHER
     }
-    // ... существующий код ssid и networkActor
+    // ... существующий код (ssid, networkActor)
 }
 
 override fun onLost(network: Network) {
@@ -154,7 +161,7 @@ override fun onLost(network: Network) {
 
 ---
 
-### 4. Автопинг кандидатов — `NetworkProxyPinger`
+### 5. Автопинг кандидатов — `NetworkProxyPinger`
 
 **Новый файл:** `app/src/main/java/io/nekohasekai/sagernet/bg/NetworkProxyPinger.kt`
 
@@ -162,9 +169,9 @@ override fun onLost(network: Network) {
 object NetworkProxyPinger {
 
     /**
-     * Пингует [candidates] параллельно через [V2RayTestInstance].
+     * Пингует [candidates] параллельно через V2RayTestInstance.
      * Возвращает список, отсортированный по задержке (лучший первый).
-     * Профили с ошибкой — в конце.
+     * Недоступные профили — в конце.
      */
     suspend fun pingAndRank(
         candidates: List<ProxyEntity>,
@@ -172,39 +179,35 @@ object NetworkProxyPinger {
         timeoutMs: Int = DataStore.autoPingTimeout.takeIf { it > 0 } ?: 3000,
         concurrency: Int = DataStore.autoPingConcurrency.takeIf { it > 0 } ?: 4,
     ): List<ProxyEntity> = coroutineScope {
-        val results = ConcurrentHashMap<Long, Int>() // id -> ping ms (Int.MAX_VALUE = fail)
-
+        val results = ConcurrentHashMap<Long, Int>()   // proxy.id → ping ms
         val semaphore = Semaphore(concurrency)
-        val jobs = candidates.map { profile ->
+
+        candidates.map { proxy ->
             launch {
                 semaphore.withPermit {
                     val ping = try {
-                        V2RayTestInstance(profile, testUrl, timeoutMs).use { it.doTest() }
+                        V2RayTestInstance(proxy, testUrl, timeoutMs).use { it.doTest() }
                     } catch (_: Exception) {
                         Int.MAX_VALUE
                     }
-                    results[profile.id] = ping
-                    // сохранить результат в БД, как это делает ConfigurationFragment.urlTest()
-                    profile.ping = if (ping == Int.MAX_VALUE) 0 else ping
-                    profile.status = if (ping == Int.MAX_VALUE) 3 else 1
-                    SagerDatabase.proxyDao.updateProxy(profile)
+                    results[proxy.id] = ping
+                    proxy.ping   = if (ping == Int.MAX_VALUE) 0 else ping
+                    proxy.status = if (ping == Int.MAX_VALUE) 3 else 1
+                    SagerDatabase.proxyDao.updateProxy(proxy)
                 }
             }
-        }
-        jobs.joinAll()
+        }.joinAll()
 
-        candidates.sortedWith(compareBy {
-            results[it.id] ?: Int.MAX_VALUE
-        })
+        candidates.sortedBy { results[it.id] ?: Int.MAX_VALUE }
     }
 }
 ```
 
-> `V2RayTestInstance` и его `doTest()` уже готовы — переиспользуем без изменений.
+> `V2RayTestInstance` и `doTest()` уже готовы — переиспользуем без изменений.
 
 ---
 
-### 5. Автовыбор профиля — `NetworkAwareSelector`
+### 6. Автовыбор профиля — `NetworkAwareSelector`
 
 **Новый файл:** `app/src/main/java/io/nekohasekai/sagernet/bg/NetworkAwareSelector.kt`
 
@@ -213,16 +216,12 @@ object NetworkAwareSelector {
 
     fun start() {
         runOnDefaultDispatcher {
-            DefaultNetworkListener.start(this) { network ->
-                onNetworkChanged(network)
-            }
+            DefaultNetworkListener.start(this) { network -> onNetworkChanged(network) }
         }
     }
 
     fun stop() {
-        runOnDefaultDispatcher {
-            DefaultNetworkListener.stop(this)
-        }
+        runOnDefaultDispatcher { DefaultNetworkListener.stop(this) }
     }
 
     private fun onNetworkChanged(network: Network?) {
@@ -234,41 +233,44 @@ object NetworkAwareSelector {
         }
 
         runOnDefaultDispatcher {
-            val tag = when (DefaultNetworkListener.currentNetworkType) {
-                NetworkType.WIFI   -> DataStore.wifiProxyTag.ifEmpty { "wifi" }
-                NetworkType.MOBILE -> DataStore.mobileProxyTag.ifEmpty { "mobile" }
+            val rawKeywords = when (DefaultNetworkListener.currentNetworkType) {
+                NetworkType.WIFI   -> DataStore.wifiKeywords
+                NetworkType.MOBILE -> DataStore.mobileKeywords
                 else               -> return@runOnDefaultDispatcher
             }
 
-            val group = DataStore.currentGroup()
-            val candidates = SagerDatabase.proxyDao
-                .getByGroup(group.id)
-                .filter { it.networkTags.contains(tag) }
+            // 1. Получить все профили текущей группы
+            val allProxies = SagerDatabase.proxyDao.getByGroup(DataStore.currentGroup().id)
 
+            // 2. Отфильтровать по ключевым словам в displayName() / displayType()
+            val candidates = KeywordFilter.filter(allProxies, rawKeywords)
             if (candidates.isEmpty()) {
-                Logs.w("NetworkAwareSelector: no candidates for tag '$tag'")
+                Logs.w("NetworkAwareSelector: no candidates for keywords '$rawKeywords'")
                 return@runOnDefaultDispatcher
             }
 
+            // 3. Пинг кандидатов (или взять по сохранённому ping)
             val ranked = if (DataStore.autoPingBeforeConnect) {
                 NetworkProxyPinger.pingAndRank(candidates)
             } else {
-                // без пинга — брать профиль с наименьшим сохранённым ping (или первый)
                 candidates.sortedWith(compareBy {
                     if (it.status == 1 && it.ping > 0) it.ping else Int.MAX_VALUE
                 })
             }
 
-            val best = ranked.firstOrNull { it.status != 3 } ?: return@runOnDefaultDispatcher
+            // 4. Выбрать лучший доступный
+            val best = ranked.firstOrNull { it.status != 3 } ?: run {
+                Logs.w("NetworkAwareSelector: all candidates unreachable")
+                return@runOnDefaultDispatcher
+            }
 
             if (DataStore.selectedProxy == best.id) {
-                // профиль тот же — просто убедиться что сервис запущен
                 if (DataStore.autoConnect && !BaseService.isRunning()) SagerNet.startService()
                 return@runOnDefaultDispatcher
             }
 
             DataStore.selectedProxy = best.id
-            Logs.i("NetworkAwareSelector: selected '${best.displayName()}' (ping=${best.ping}ms) for tag '$tag'")
+            Logs.i("NetworkAwareSelector: → '${best.displayName()}' ping=${best.ping}ms  keywords='$rawKeywords'")
 
             if (BaseService.isRunning()) {
                 SagerNet.reloadService()
@@ -282,22 +284,18 @@ object NetworkAwareSelector {
 
 ---
 
-### 6. Интеграция в жизненный цикл сервиса
+### 7. Интеграция в жизненный цикл
 
-#### 6.1 Запуск/остановка селектора
-**Файл:** `app/src/main/java/io/nekohasekai/sagernet/bg/BaseService.kt`
-
+#### 7.1 `BaseService.kt`
 ```kotlin
-// в onStartCommand или onCreate сервиса:
+// в onStartCommand / onCreate:
 NetworkAwareSelector.start()
 
 // в onDestroy:
 NetworkAwareSelector.stop()
 ```
 
-#### 6.2 Автоподключение при старте приложения
-**Файл:** `app/src/main/java/io/nekohasekai/sagernet/SagerNet.kt`
-
+#### 7.2 Автоподключение при старте — `SagerNet.kt`
 ```kotlin
 // в onCreate(), после инициализации DataStore:
 if (DataStore.autoConnect && DataStore.selectedProxy > 0) {
@@ -305,21 +303,17 @@ if (DataStore.autoConnect && DataStore.selectedProxy > 0) {
 }
 ```
 
-#### 6.3 Boot receiver
-**Файл:** `app/src/main/java/io/nekohasekai/sagernet/BootReceiver.kt`
-
-Убедиться, что `BootReceiver.onReceive()` проверяет `DataStore.autoConnect` перед запуском сервиса. Если проверки нет — добавить:
+#### 7.3 `BootReceiver.kt`
+Добавить проверку:
 ```kotlin
 if (!DataStore.autoConnect) return
 ```
 
 ---
 
-### 7. UI — настройки автовыбора
+### 8. UI — настройки
 
 **Файл:** `app/src/main/res/xml/global_preferences.xml`
-
-Добавить секцию:
 
 ```xml
 <PreferenceCategory app:title="@string/auto_select_category">
@@ -329,19 +323,24 @@ if (!DataStore.autoConnect) return
         app:title="@string/auto_select_by_network"
         app:summary="@string/auto_select_by_network_summary" />
 
+    <!-- Ключевые слова для Wi-Fi -->
     <EditTextPreference
-        app:key="wifiProxyTag"
-        app:title="@string/wifi_proxy_tag"
+        app:key="wifiKeywords"
+        app:title="@string/wifi_keywords"
+        app:summary="@string/wifi_keywords_summary"
         app:dependency="autoSelectByNetwork" />
 
+    <!-- Ключевые слова для мобильной сети -->
     <EditTextPreference
-        app:key="mobileProxyTag"
-        app:title="@string/mobile_proxy_tag"
+        app:key="mobileKeywords"
+        app:title="@string/mobile_keywords"
+        app:summary="@string/mobile_keywords_summary"
         app:dependency="autoSelectByNetwork" />
 
     <SwitchPreferenceCompat
         app:key="autoPingBeforeConnect"
         app:title="@string/auto_ping_before_connect"
+        app:summary="@string/auto_ping_before_connect_summary"
         app:dependency="autoSelectByNetwork" />
 
     <EditTextPreference
@@ -363,19 +362,19 @@ if (!DataStore.autoConnect) return
 </PreferenceCategory>
 ```
 
-**Файл:** `app/src/main/res/values/strings.xml` — добавить:
+**Файл:** `app/src/main/res/values/strings.xml`
 
 ```xml
 <string name="auto_select_category">Auto proxy selection</string>
-<string name="auto_select_by_network">Auto-select by network type</string>
-<string name="auto_select_by_network_summary">Pick the best proxy by tag when switching between Wi-Fi and mobile network</string>
-<string name="wifi_proxy_tag">Tag for Wi-Fi</string>
-<string name="mobile_proxy_tag">Tag for mobile network</string>
+<string name="auto_select_by_network">Auto-select proxy by network type</string>
+<string name="auto_select_by_network_summary">Switch proxy automatically when changing between Wi-Fi and mobile network</string>
+<string name="wifi_keywords">Keywords for Wi-Fi</string>
+<string name="wifi_keywords_summary">Comma-separated words matched against proxy name and type. Example: Армения, Латвия, Gaming</string>
+<string name="mobile_keywords">Keywords for mobile network</string>
+<string name="mobile_keywords_summary">Comma-separated words matched against proxy name and type. Example: LTE, При глушении</string>
 <string name="auto_ping_before_connect">Ping before connecting</string>
-<string name="auto_ping_before_connect_summary">Test latency of candidates and pick the fastest</string>
+<string name="auto_ping_before_connect_summary">Test latency of matching proxies and pick the fastest</string>
 <string name="auto_ping_timeout">Ping timeout (ms)</string>
-<string name="network_tags">Network tags</string>
-<string name="network_tags_summary">Comma-separated tags for auto-selection (e.g. wifi, mobile)</string>
 <string name="auto_connect">Auto-connect</string>
 <string name="auto_connect_summary">Connect automatically on app start and network change</string>
 <string name="stop_on_network_loss">Disconnect on network loss</string>
@@ -383,69 +382,69 @@ if (!DataStore.autoConnect) return
 
 ---
 
-### 8. Граничные случаи
+### 9. Граничные случаи
 
-| Ситуация | Ожидаемое поведение |
+| Ситуация | Поведение |
 |---|---|
-| Нет кандидатов с нужным тэгом | Логировать предупреждение, не менять профиль |
-| Все кандидаты недоступны (ping fail) | Не переключать; оставить текущий профиль |
-| Профиль удалён из подписки | Сбросить `selectedProxy`, показать уведомление |
-| VPN активен, сеть сменилась | Пингануть кандидатов → выбрать лучшего → `reloadService()` |
-| `autoPingBeforeConnect = false` | Брать профиль с минимальным сохранённым `ping`, или первый по порядку |
-| `autoSelectByNetwork = false` | `NetworkAwareSelector` полностью бездействует |
-| Подписка обновилась (новые профили) | После обновления группы повторно запустить выбор для текущего типа сети |
-| Несколько профилей с одинаковым тэгом | Все попадают в пинг-тест; побеждает с наименьшим `ping` |
-| Нет сети (network = null) | Опционально останавливать сервис (флаг `stopOnNetworkLoss`) |
+| Ключевые слова не заданы (пустая строка) | `KeywordFilter.filter()` возвращает все профили группы |
+| Ни один профиль не совпал по словам | Логировать предупреждение, не менять профиль |
+| Все кандидаты недоступны (ping fail) | Не переключать, оставить текущий |
+| Уже выбран лучший профиль | Не перезапускать сервис, только убедиться что запущен |
+| Подписка обновилась | После обновления группы повторно запустить `onNetworkChanged` |
+| `autoPingBeforeConnect = false` | Сортировка по сохранённому `ping`; без нового теста |
+| Несколько кандидатов с одинаковым пингом | Победитель — первый по порядку в группе |
+| Профиль удалён из подписки | `selectedProxy` сбросится при следующем цикле выбора |
 
 ---
 
-### 9. Рекомендуемый UX-флоу
+### 10. UX-флоу (пример)
 
 ```
-Пользователь в подписке:
-  Профиль A  → теги: [wifi]
-  Профиль B  → теги: [wifi]
-  Профиль C  → теги: [mobile]
-  Профиль D  → теги: [mobile, roaming]
+Подписка содержит:
+  ⚡ LTE Россия          (displayName)  / "При глушении LTE/4G" в name
+  ⚡ LTE Россия 2        
+  ⚡ LTE Европа 1        
+  Армения                / VLESS / TCP / REALITY | JSON
+  Латвия                 / VLESS / TCP / REALITY | JSON
+  Швеция • Gaming 🎮    
 
 Настройки:
-  autoSelectByNetwork    = true
-  wifiProxyTag           = "wifi"
-  mobileProxyTag         = "mobile"
-  autoPingBeforeConnect  = true
+  wifiKeywords   = "Армения, Латвия, Gaming"
+  mobileKeywords = "LTE"
+  autoPingBeforeConnect = true
 
-Сценарий: телефон переключился с Wi-Fi на мобильную сеть
-  1. DefaultNetworkListener.onCapabilitiesChanged → currentNetworkType = MOBILE
-  2. NetworkAwareSelector.onNetworkChanged()
-  3. Кандидаты: [C, D]  (оба имеют тэг "mobile")
-  4. NetworkProxyPinger.pingAndRank([C, D])
-     → C: 87ms, D: 210ms
-  5. DataStore.selectedProxy = C.id
+Сценарий: телефон переключился с Wi-Fi → Mobile
+  1. DefaultNetworkListener → currentNetworkType = MOBILE
+  2. NetworkAwareSelector: rawKeywords = "LTE"
+  3. KeywordFilter: ["⚡ LTE Россия", "⚡ LTE Россия 2", "⚡ LTE Европа 1"] (3 кандидата)
+  4. NetworkProxyPinger.pingAndRank():
+       ⚡ LTE Россия 2  →  54 ms  ✓
+       ⚡ LTE Россия    →  91 ms  ✓
+       ⚡ LTE Европа 1  → 310 ms  ✓
+  5. DataStore.selectedProxy = "⚡ LTE Россия 2"
   6. SagerNet.reloadService()
 ```
 
 ---
 
-### 10. Порядок реализации
+### 11. Порядок реализации
 
-1. **`Constants.kt`** — добавить все ключи (п. 2.1)
-2. **БД-миграция** в `Migrations.kt` — добавить колонку `networkTags`
-3. **`ProxyEntity.kt`** — добавить поле `networkTags`
-4. **`DataStore.kt`** — добавить поля (п. 2.2)
-5. **`DefaultNetworkListener.kt`** — добавить `NetworkType` + `currentNetworkType` (п. 3)
-6. **`NetworkProxyPinger.kt`** — новый файл (п. 4)
-7. **`NetworkAwareSelector.kt`** — новый файл (п. 5)
-8. **`BaseService.kt`** / **`SagerNet.kt`** — интеграция (п. 6)
-9. **`ProfileSettingsActivity.kt`** + `name_preferences.xml` — UI тэгов (п. 1.2)
-10. **`global_preferences.xml`** + `strings.xml` — UI настроек (п. 7)
-11. **`BootReceiver.kt`** — проверка `autoConnect` (п. 6.3)
-12. **Тесты** (п. ниже)
+1. **`Constants.kt`** — добавить ключи (п. 1)
+2. **`DataStore.kt`** — добавить поля (п. 2)
+3. **`DefaultNetworkListener.kt`** — добавить `NetworkType` + `currentNetworkType` (п. 4)
+4. **`KeywordFilter.kt`** — новый файл (п. 3)
+5. **`NetworkProxyPinger.kt`** — новый файл (п. 5)
+6. **`NetworkAwareSelector.kt`** — новый файл (п. 6)
+7. **`BaseService.kt`** / **`SagerNet.kt`** — интеграция (п. 7)
+8. **`BootReceiver.kt`** — проверка `autoConnect` (п. 7.3)
+9. **`global_preferences.xml`** + **`strings.xml`** — UI (п. 8)
+10. **`SettingsPreferenceFragment.kt`** — подключить preference'ы
 
 ---
 
-### 11. Тесты
+### 12. Тесты
 
-- [ ] **Unit** `NetworkProxyPinger`: мок `V2RayTestInstance`, проверить сортировку по пингу и обработку ошибок
-- [ ] **Unit** `NetworkAwareSelector`: мок `DefaultNetworkListener` + `DataStore`, проверить выбор профиля по тэгу
-- [ ] **Интеграционный**: смена `currentNetworkType` → проверить `DataStore.selectedProxy` и вызов `reloadService()`
-- [ ] **UI**: задать тэги профилю → проверить что они сохраняются и отображаются в summary
+- [ ] **Unit** `KeywordFilter`: проверить матчинг по имени, по типу, регистронезависимость, пустые слова
+- [ ] **Unit** `NetworkProxyPinger`: мок `V2RayTestInstance`, проверить сортировку и обработку ошибок
+- [ ] **Unit** `NetworkAwareSelector`: мок `DefaultNetworkListener` + `DataStore`, проверить выбор и вызов `reloadService`
+- [ ] **UI**: задать ключевые слова → убедиться что summary обновляется корректно
