@@ -21,6 +21,7 @@
 package io.nekohasekai.sagernet.group
 
 import androidx.core.net.toUri
+import android.os.Build
 import io.nekohasekai.sagernet.R
 import io.nekohasekai.sagernet.SagerNet
 import io.nekohasekai.sagernet.database.DataStore
@@ -45,6 +46,7 @@ import org.yaml.snakeyaml.nodes.SequenceNode
 import org.yaml.snakeyaml.nodes.Tag
 import org.yaml.snakeyaml.representer.Representer
 import org.yaml.snakeyaml.resolver.Resolver
+import io.nekohasekai.sagernet.utils.DeviceId
 import java.util.regex.Pattern
 
 @Suppress("EXPERIMENTAL_API_USAGE")
@@ -78,7 +80,22 @@ object RawUpdater : GroupUpdater() {
                 } else {
                     setUserAgent(USER_AGENT)
                 }
+                if (DataStore.hwidEnabled) {
+                    val hwid = DeviceId.get(app)
+                    setHeader("x-hwid", hwid)
+                    setHeader("x-device-os", "Android")
+                    setHeader("x-ver-os", Build.VERSION.RELEASE)
+                    setHeader("x-device-model", "${Build.MANUFACTURER} ${Build.MODEL}")
+                }
             }.execute()
+
+            if (DataStore.hwidEnabled) {
+                val hwidNotSupported = response.getHeader("x-hwid-not-supported") == "true"
+                val hwidLimitReached = response.getHeader("x-hwid-max-devices-reached") == "true"
+                    || response.getHeader("x-hwid-limit") == "true"
+                if (hwidNotSupported) error(app.getString(R.string.hwid_not_supported))
+                if (hwidLimitReached) error(app.getString(R.string.hwid_limit_reached))
+            }
 
             proxies = parseRaw(response.contentString)
                 ?: error(app.getString(R.string.no_proxies_found))

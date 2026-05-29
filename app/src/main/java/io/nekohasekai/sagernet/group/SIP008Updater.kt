@@ -20,6 +20,7 @@
 package io.nekohasekai.sagernet.group
 
 import androidx.core.net.toUri
+import android.os.Build
 import com.google.gson.JsonObject
 import io.nekohasekai.sagernet.ExtraType
 import io.nekohasekai.sagernet.R
@@ -28,6 +29,7 @@ import io.nekohasekai.sagernet.database.*
 import io.nekohasekai.sagernet.fmt.AbstractBean
 import io.nekohasekai.sagernet.fmt.shadowsocks.parseShadowsocksConfig
 import io.nekohasekai.sagernet.ktx.*
+import io.nekohasekai.sagernet.utils.DeviceId
 import libexclavecore.Libexclavecore
 
 object SIP008Updater : GroupUpdater() {
@@ -61,6 +63,13 @@ object SIP008Updater : GroupUpdater() {
                         setUserAgent(subscription.customUserAgent)
                     } else {
                         setUserAgent(USER_AGENT)
+                    }
+                    if (DataStore.hwidEnabled) {
+                        val hwid = DeviceId.get(app)
+                        setHeader("x-hwid", hwid)
+                        setHeader("x-device-os", "Android")
+                        setHeader("x-ver-os", Build.VERSION.RELEASE)
+                        setHeader("x-device-model", "${Build.MANUFACTURER} ${Build.MODEL}")
                     }
                 }.execute()
 

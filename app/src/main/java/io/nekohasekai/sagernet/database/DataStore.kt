@@ -456,6 +456,17 @@ object DataStore : OnPreferenceDataStoreChangeListener {
     var subscriptionNameFilter by profileCacheStore.string(Key.SUBSCRIPTION_NAME_FILTER)
     var subscriptionNameFilter1 by profileCacheStore.string(Key.SUBSCRIPTION_NAME_FILTER1)
 
+    var hwidEnabled   by configurationStore.boolean(Key.HWID_ENABLED)
+    var customHwid    by configurationStore.string(Key.CUSTOM_HWID)
+    var generatedHwid by configurationStore.string(Key.GENERATED_HWID)
+
+    var autoSelectByNetwork   by configurationStore.boolean(Key.AUTO_SELECT_BY_NETWORK)
+    var wifiKeywords          by configurationStore.string(Key.WIFI_KEYWORDS)
+    var mobileKeywords        by configurationStore.string(Key.MOBILE_KEYWORDS)
+    var autoPingBeforeConnect by configurationStore.boolean(Key.AUTO_PING_BEFORE_CONNECT)
+    var autoPingTimeout       by configurationStore.int(Key.AUTO_PING_TIMEOUT)
+    var autoPingConcurrency   by configurationStore.int(Key.AUTO_PING_CONCURRENCY)
+
     var editingAssetName by profileCacheStore.string(Key.EDITING_ASSET_NAME)
     var assetName by profileCacheStore.string(Key.ASSET_NAME)
     var assetUrl by profileCacheStore.string(Key.ASSET_URL)

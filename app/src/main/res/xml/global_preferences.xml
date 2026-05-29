@@ -466,4 +466,75 @@
             app:title="Experimental flags" />
     </PreferenceCategory>
 
+    <PreferenceCategory app:title="@string/auto_select_category">
+
+        <SwitchPreference
+            app:key="autoSelectByNetwork"
+            app:title="@string/auto_select_by_network"
+            app:summary="@string/auto_select_by_network_summary"
+            app:icon="@drawable/ic_baseline_compare_arrows_24" />
+
+        <EditTextPreference
+            app:key="wifiKeywords"
+            app:title="@string/wifi_keywords"
+            app:summary="@string/wifi_keywords_hint"
+            app:icon="@drawable/baseline_wifi_lock_24"
+            app:dependency="autoSelectByNetwork"
+            app:useSimpleSummaryProvider="true" />
+
+        <EditTextPreference
+            app:key="mobileKeywords"
+            app:title="@string/mobile_keywords"
+            app:summary="@string/mobile_keywords_hint"
+            app:icon="@drawable/ic_baseline_airplanemode_active_24"
+            app:dependency="autoSelectByNetwork"
+            app:useSimpleSummaryProvider="true" />
+
+        <SwitchPreference
+            app:key="autoPingBeforeConnect"
+            app:title="@string/auto_ping_before_connect"
+            app:summary="@string/auto_ping_before_connect_summary"
+            app:icon="@drawable/ic_baseline_speed_24"
+            app:dependency="autoSelectByNetwork" />
+
+        <EditTextPreference
+            app:key="autoPingTimeout"
+            app:title="@string/auto_ping_timeout"
+            app:dependency="autoPingBeforeConnect"
+            app:icon="@drawable/ic_baseline_timelapse_24"
+            app:inputType="number"
+            app:useSimpleSummaryProvider="true" />
+
+        <EditTextPreference
+            app:key="autoPingConcurrency"
+            app:title="@string/auto_ping_concurrency"
+            app:dependency="autoPingBeforeConnect"
+            app:icon="@drawable/ic_baseline_multiple_stop_24"
+            app:inputType="number"
+            app:useSimpleSummaryProvider="true" />
+
+    </PreferenceCategory>
+
+    <PreferenceCategory app:title="@string/hwid_category">
+
+        <SwitchPreference
+            app:key="hwidEnabled"
+            app:title="@string/hwid_enabled"
+            app:summary="@string/hwid_enabled_summary"
+            app:defaultValue="true" />
+
+        <Preference
+            app:key="hwidCurrent"
+            app:title="@string/hwid_current"
+            app:dependency="hwidEnabled" />
+
+        <EditTextPreference
+            app:key="customHwid"
+            app:title="@string/hwid_custom"
+            app:summary="@string/hwid_custom_summary"
+            app:dependency="hwidEnabled"
+            app:useSimpleSummaryProvider="true" />
+
+    </PreferenceCategory>
+
 </PreferenceScreen>

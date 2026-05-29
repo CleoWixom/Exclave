@@ -167,6 +167,7 @@ class VpnService : BaseVpnService(),
             if (networkListenerIsRunning) {
                 underlyingNetwork = it
                 SagerNet.reloadNetwork(it)
+                runOnDefaultDispatcher { NetworkAwareSelector.onNetworkChanged(it) }
             }
         }
     }

@@ -43,6 +43,7 @@ import io.nekohasekai.sagernet.ktx.*
 import io.nekohasekai.sagernet.ui.profile.ProfileSettingsActivity
 import io.nekohasekai.sagernet.utils.PackageCache
 import io.nekohasekai.sagernet.utils.Theme
+import io.nekohasekai.sagernet.utils.DeviceId
 import io.nekohasekai.sagernet.widget.ColorPickerPreference
 import io.nekohasekai.sagernet.widget.LinkOrContentPreference
 import kotlinx.coroutines.delay
@@ -567,6 +568,13 @@ class SettingsPreferenceFragment : PreferenceFragmentCompat() {
             }
             true
         }
+
+        // HWID
+        findPreference<Preference>(Key.HWID_ENABLED)?.onPreferenceChangeListener = Preference.OnPreferenceChangeListener { _, _ ->
+            findPreference<Preference>(Key.HWID_CURRENT)?.summary = DeviceId.get(requireContext())
+            true
+        }
+        findPreference<Preference>(Key.HWID_CURRENT)?.summary = DeviceId.get(requireContext())
     }
 
 

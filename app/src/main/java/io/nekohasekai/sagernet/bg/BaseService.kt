@@ -29,6 +29,7 @@ import android.os.*
 import io.nekohasekai.sagernet.Action
 import io.nekohasekai.sagernet.BootReceiver
 import io.nekohasekai.sagernet.R
+import io.nekohasekai.sagernet.SagerNet
 import io.nekohasekai.sagernet.aidl.AppStatsList
 import io.nekohasekai.sagernet.aidl.ISagerNetService
 import io.nekohasekai.sagernet.aidl.ISagerNetServiceCallback
@@ -379,6 +380,9 @@ class BaseService {
         }
 
         suspend fun startProcesses() {
+            if (DataStore.autoSelectByNetwork) {
+                NetworkAwareSelector.onNetworkChanged(SagerNet.currentNetwork)
+            }
             data.proxy!!.launch()
         }
 

@@ -316,6 +316,18 @@ object Key {
     const val SUBSCRIPTION_NAME_FILTER = "subscriptionNameFilter"
     const val SUBSCRIPTION_NAME_FILTER1 = "subscriptionNameFilter1"
 
+    const val HWID_ENABLED   = "hwidEnabled"
+    const val CUSTOM_HWID    = "customHwid"
+    const val GENERATED_HWID = "generatedHwid"
+    const val HWID_CURRENT   = "hwidCurrent"
+
+    const val AUTO_SELECT_BY_NETWORK   = "autoSelectByNetwork"
+    const val WIFI_KEYWORDS            = "wifiKeywords"
+    const val MOBILE_KEYWORDS          = "mobileKeywords"
+    const val AUTO_PING_BEFORE_CONNECT = "autoPingBeforeConnect"
+    const val AUTO_PING_TIMEOUT        = "autoPingTimeout"
+    const val AUTO_PING_CONCURRENCY    = "autoPingConcurrency"
+
     const val EDITING_ASSET_NAME = "editingAssetName"
     const val ASSET_NAME = "assetName"
     const val ASSET_URL = "assetUrl"

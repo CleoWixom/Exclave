@@ -144,6 +144,7 @@ public class SubscriptionBean extends Serializable {
         if (version >= 8) {
             nameFilter1 = input.readString();
         }
+
     }
 
     public void deserializeFromShare(ByteBufferInput input) {

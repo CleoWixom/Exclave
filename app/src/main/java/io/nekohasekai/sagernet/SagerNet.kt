@@ -259,6 +259,8 @@ class SagerNet : Application(),
 
         var currentNetwork: Network? = null
         var currentLinkAddresses: Set<LinkAddress>? = null
+        @Volatile
+        var currentNetworkType: String = ""
 
         fun reloadNetwork(network: Network?) {
             val capabilities = connectivity.getNetworkCapabilities(network) ?: return
@@ -277,6 +279,7 @@ class SagerNet : Application(),
                 // capabilities.hasTransport(NetworkCapabilities.TRANSPORT_THREAD) -> "thread"
                 else -> ""
             }
+            currentNetworkType = networkType
             Libexclavecore.setNetworkType(networkType)
 
             var ssid = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
