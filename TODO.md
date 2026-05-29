@@ -645,22 +645,33 @@ var generatedHwid  by configurationStore.string(Key.GENERATED_HWID)  // default:
 
 ---
 
-#### HWID-3. Расширение `Libexclavecore` HTTP-запроса — `setHeader()`
+#### HWID-3. `setHeader()` — уже реализован в ядре
 
-**Файл:** `library/core/main.go` → через форк `github.com/exclavenetwork/libexclavecore`
+**Файл:** [`ExclaveNetwork/LibExclaveCore/http.go`](https://github.com/ExclaveNetwork/LibExclaveCore/blob/main/http.go), строка 155
 
-Публичный API Go-ядра нужно расширить методом для установки произвольного заголовка:
+Интерфейс `HTTPRequest` (строка 44) явно объявляет метод:
 
 ```go
-// В типе Request (или его обёртке):
-func (r *Request) SetHeader(name, value string) {
-    r.headers[name] = value
+type HTTPRequest interface {
+    SetURL(link string) error
+    SetMethod(method string)
+    SetHeader(key string, value string)   // ← уже есть
+    SetUserAgent(userAgent string)
+    Execute() (HTTPResponse, error)
+    // ...
 }
 ```
 
-После добавления и пересборки AAR метод появится как `request.setHeader(name, value)` в Kotlin.
+Реализация (строка 155):
 
-> **Альтернатива без изменения ядра:** добавить HWID в `User-Agent` строку (например `Exclave/1.x.x hwid/<value>`). Это нестандартно, Remnawave поддерживает только `x-hwid` заголовок, поэтому данный путь не подходит. Полноценная реализация требует расширения ядра.
+```go
+func (r *httpRequest) SetHeader(key string, value string) {
+    r.request.Header.Set(key, value)
+}
+```
+
+Через gomobile метод доступен в Kotlin как `request.setHeader(key, value)` — аналогично уже используемому `setUserAgent()`.
+**Никаких изменений в ядре не требуется.**
 
 ---
 
@@ -668,7 +679,7 @@ func (r *Request) SetHeader(name, value string) {
 
 **Файл:** `app/src/main/java/io/nekohasekai/sagernet/group/RawUpdater.kt`
 
-После добавления `setHeader()` в ядро — изменить блок построения запроса:
+`setHeader()` доступен без каких-либо изменений ядра. Нужно только дополнить блок построения запроса:
 
 ```kotlin
 // Существующий код:
@@ -791,11 +802,12 @@ findPreference<Preference>("hwidCurrent")?.apply {
 1. **`Constants.kt`** — добавить 3 ключа (HWID-2)
 2. **`DataStore.kt`** — добавить 3 поля (HWID-2)
 3. **`DeviceId.kt`** — новый файл (HWID-1)
-4. **Форк/PR `libexclavecore`** — добавить `setHeader()` в Go HTTP-клиент (HWID-3)
-5. **`RawUpdater.kt`** — отправка заголовков + обработка ответа (HWID-4, HWID-5)
-6. **`SIP008Updater.kt`** — отправка заголовков (HWID-4)
-7. **`global_preferences.xml`** + **`strings.xml`** — UI (HWID-6)
-8. **`SettingsPreferenceFragment.kt`** — привязать `hwidCurrent` (HWID-6)
+4. **`RawUpdater.kt`** — отправка заголовков + обработка ответа (HWID-4, HWID-5)
+5. **`SIP008Updater.kt`** — отправка заголовков (HWID-4)
+6. **`global_preferences.xml`** + **`strings.xml`** — UI (HWID-6)
+7. **`SettingsPreferenceFragment.kt`** — привязать `hwidCurrent` (HWID-6)
+
+> `setHeader()` уже доступен в `Libexclavecore` ([`http.go:155`](https://github.com/ExclaveNetwork/LibExclaveCore/blob/main/http.go#L155)) — дополнительных изменений в ядре не требуется.
 
 ### Тесты HWID
 
