@@ -525,3 +525,281 @@ if (DataStore.autoSelectByNetwork) {
 - [ ] **Unit** `NetworkProxyPinger`: мок `V2RayTestInstance`, проверить сортировку и обработку ошибок
 - [ ] **Unit** `NetworkAwareSelector`: мок `SagerNet.currentNetworkType` и `DataStore`, проверить выбор и вызов `reloadService`
 - [ ] **Интеграционный**: смена `currentNetworkType` "wifi" → "data" → проверить `DataStore.selectedProxy`
+
+---
+
+## HWID Device Limit (Remnawave)
+
+### Что такое HWID Device Limit
+
+Remnawave-панель поддерживает ограничение числа устройств по HWID. При включённой опции сервер:
+- Возвращает `404` при запросе подписки **без** заголовка `x-hwid`
+- Отслеживает уникальные устройства по HWID
+- Возвращает диагностические заголовки в ответе
+
+**В репозитории HWID не реализован вообще** — ни получение Device ID, ни хранение, ни отправка заголовков при запросе подписки.
+
+---
+
+### Протокол (по документации Remnawave)
+
+Клиент отправляет при запросе подписки:
+
+```
+x-hwid: <уникальный_идентификатор_устройства>   // обязателен
+x-device-os: Android                             // опционально
+x-ver-os: 14                                     // опционально
+x-device-model: Pixel 8 Pro                      // опционально
+user-agent: Exclave/1.x.x                        // уже отправляется
+```
+
+Сервер отвечает заголовками:
+
+| Заголовок | Значение |
+|---|---|
+| `x-hwid-active` | `true` — HWID-ограничение включено на сервере |
+| `x-hwid-not-supported` | `true` — сервер ждал HWID, но клиент не прислал |
+| `x-hwid-max-devices-reached` | `true` — лимит устройств исчерпан |
+| `x-hwid-limit` | `true` — лимит достигнут (для обратной совместимости) |
+
+---
+
+### Ограничение текущего API `Libexclavecore`
+
+Объект `newRequest()` из `Libexclavecore.newHttpClient()` предоставляет только:
+- `setURL(url)`
+- `setUserAgent(ua)`
+- `execute()`
+- `getHeader(name)` — только на ответе
+
+Метода `setHeader(name, value)` в публичном API **нет**. Это ключевое ограничение — для добавления произвольных заголовков нужно расширить `libexclavecore`.
+
+---
+
+### Задачи
+
+#### HWID-1. Получение/генерация Device ID
+
+**Новый файл:** `app/src/main/java/io/nekohasekai/sagernet/utils/DeviceId.kt`
+
+```kotlin
+object DeviceId {
+
+    private const val PREF_KEY = "deviceHwid"
+
+    /**
+     * Возвращает HWID устройства:
+     * 1. Если пользователь задал кастомный HWID в настройках — вернуть его
+     * 2. Иначе: взять ANDROID_ID (стабилен в рамках одного аккаунта/устройства)
+     * 3. Если ANDROID_ID недоступен — сгенерировать случайный UUID и сохранить в DataStore
+     */
+    fun get(context: Context): String {
+        // 1. Кастомный HWID от пользователя
+        val custom = DataStore.customHwid
+        if (custom.isNotBlank()) return custom.trim()
+
+        // 2. Авто-режим: ANDROID_ID
+        val androidId = Settings.Secure.getString(
+            context.contentResolver,
+            Settings.Secure.ANDROID_ID
+        )
+        if (!androidId.isNullOrBlank() && androidId != "9774d56d682e549c") {
+            // uuid5 уже реализован в ktx/UUIDs.kt
+            return uuid5("exclave-hwid-$androidId")
+        }
+
+        // 3. Fallback: стабильный случайный UUID
+        var stored = DataStore.generatedHwid
+        if (stored.isBlank()) {
+            stored = UUID.randomUUID().toString()
+            DataStore.generatedHwid = stored
+        }
+        return stored
+    }
+}
+```
+
+> `uuid5()` уже реализован в `ktx/UUIDs.kt`. `Settings.Secure.ANDROID_ID` — стабильный идентификатор (сбрасывается только при factory reset или смене аккаунта).
+> Значение `"9774d56d682e549c"` — известный баг-дефолт на некоторых устройствах.
+
+---
+
+#### HWID-2. Константы и поля `DataStore`
+
+**Файл:** `app/src/main/java/io/nekohasekai/sagernet/Constants.kt`
+
+```kotlin
+// В object Key:
+const val HWID_ENABLED      = "hwidEnabled"      // отправлять ли HWID при обновлении подписки
+const val CUSTOM_HWID       = "customHwid"        // пользовательский HWID (опционально)
+const val GENERATED_HWID    = "generatedHwid"     // авто-сгенерированный fallback UUID
+```
+
+**Файл:** `app/src/main/java/io/nekohasekai/sagernet/database/DataStore.kt`
+
+```kotlin
+var hwidEnabled    by configurationStore.boolean(Key.HWID_ENABLED)   // default: true
+var customHwid     by configurationStore.string(Key.CUSTOM_HWID)     // default: ""
+var generatedHwid  by configurationStore.string(Key.GENERATED_HWID)  // default: ""
+```
+
+---
+
+#### HWID-3. Расширение `Libexclavecore` HTTP-запроса — `setHeader()`
+
+**Файл:** `library/core/main.go` → через форк `github.com/exclavenetwork/libexclavecore`
+
+Публичный API Go-ядра нужно расширить методом для установки произвольного заголовка:
+
+```go
+// В типе Request (или его обёртке):
+func (r *Request) SetHeader(name, value string) {
+    r.headers[name] = value
+}
+```
+
+После добавления и пересборки AAR метод появится как `request.setHeader(name, value)` в Kotlin.
+
+> **Альтернатива без изменения ядра:** добавить HWID в `User-Agent` строку (например `Exclave/1.x.x hwid/<value>`). Это нестандартно, Remnawave поддерживает только `x-hwid` заголовок, поэтому данный путь не подходит. Полноценная реализация требует расширения ядра.
+
+---
+
+#### HWID-4. Отправка заголовков при запросе подписки
+
+**Файл:** `app/src/main/java/io/nekohasekai/sagernet/group/RawUpdater.kt`
+
+После добавления `setHeader()` в ядро — изменить блок построения запроса:
+
+```kotlin
+// Существующий код:
+}.newRequest().apply {
+    setURL(subscription.link)
+    if (subscription.customUserAgent.isNotEmpty()) {
+        setUserAgent(subscription.customUserAgent)
+    } else {
+        setUserAgent(USER_AGENT)
+    }
+    // NEW: добавить HWID-заголовки если включено
+    if (DataStore.hwidEnabled) {
+        val hwid = DeviceId.get(app)
+        setHeader("x-hwid", hwid)
+        setHeader("x-device-os", "Android")
+        setHeader("x-ver-os", Build.VERSION.RELEASE)
+        setHeader("x-device-model", "${Build.MANUFACTURER} ${Build.MODEL}")
+    }
+}.execute()
+```
+
+**Файл:** `app/src/main/java/io/nekohasekai/sagernet/group/SIP008Updater.kt`
+
+Аналогичное изменение — тот же блок `newRequest().apply { ... }` в строках 58–65.
+
+---
+
+#### HWID-5. Обработка ответных заголовков
+
+**Файл:** `app/src/main/java/io/nekohasekai/sagernet/group/RawUpdater.kt`
+
+После `response = ...execute()` добавить чтение HWID-заголовков сервера:
+
+```kotlin
+// Уже читается: response.getHeader("Subscription-Userinfo")
+// Добавить:
+val hwidActive         = response.getHeader("x-hwid-active") == "true"
+val hwidNotSupported   = response.getHeader("x-hwid-not-supported") == "true"
+val hwidLimitReached   = response.getHeader("x-hwid-max-devices-reached") == "true"
+    || response.getHeader("x-hwid-limit") == "true"
+
+if (hwidNotSupported) {
+    // Сервер ждал HWID, но не получил — уведомить пользователя
+    userInterface?.onError(proxyGroup, Exception(app.getString(R.string.hwid_not_supported)))
+    return
+}
+if (hwidLimitReached) {
+    // Достигнут лимит устройств — уведомить пользователя
+    userInterface?.onError(proxyGroup, Exception(app.getString(R.string.hwid_limit_reached)))
+    return
+}
+```
+
+Новые строки в `strings.xml`:
+
+```xml
+<string name="hwid_not_supported">Server requires HWID authentication. Enable HWID in settings.</string>
+<string name="hwid_limit_reached">Device limit reached. Remove unused devices in your subscription panel.</string>
+```
+
+---
+
+#### HWID-6. UI настроек
+
+**Файл:** `app/src/main/res/xml/global_preferences.xml`
+
+Добавить новую секцию:
+
+```xml
+<PreferenceCategory app:title="@string/hwid_category">
+
+    <SwitchPreference
+        app:key="hwidEnabled"
+        app:title="@string/hwid_enabled"
+        app:summary="@string/hwid_enabled_summary"
+        app:defaultValue="true" />
+
+    <!-- Показывает текущий авто-HWID (read-only) -->
+    <Preference
+        app:key="hwidCurrent"
+        app:title="@string/hwid_current"
+        app:dependency="hwidEnabled" />
+
+    <!-- Кастомный HWID — опционально -->
+    <EditTextPreference
+        app:key="customHwid"
+        app:title="@string/hwid_custom"
+        app:summary="@string/hwid_custom_summary"
+        app:dependency="hwidEnabled"
+        app:useSimpleSummaryProvider="true" />
+
+</PreferenceCategory>
+```
+
+**Файл:** `app/src/main/java/io/nekohasekai/sagernet/ui/SettingsPreferenceFragment.kt`
+
+В `onCreatePreferences()` привязать `"hwidCurrent"` preference к отображению текущего HWID:
+
+```kotlin
+findPreference<Preference>("hwidCurrent")?.apply {
+    summary = DeviceId.get(requireContext())
+}
+```
+
+**Строки** в `strings.xml`:
+
+```xml
+<string name="hwid_category">HWID Device Limit</string>
+<string name="hwid_enabled">Send HWID on subscription update</string>
+<string name="hwid_enabled_summary">Required for subscriptions with device limit (Remnawave)</string>
+<string name="hwid_current">Current HWID</string>
+<string name="hwid_custom">Custom HWID</string>
+<string name="hwid_custom_summary">Override auto-generated HWID. Leave empty to use device ANDROID_ID.</string>
+```
+
+---
+
+### Порядок реализации HWID
+
+1. **`Constants.kt`** — добавить 3 ключа (HWID-2)
+2. **`DataStore.kt`** — добавить 3 поля (HWID-2)
+3. **`DeviceId.kt`** — новый файл (HWID-1)
+4. **Форк/PR `libexclavecore`** — добавить `setHeader()` в Go HTTP-клиент (HWID-3)
+5. **`RawUpdater.kt`** — отправка заголовков + обработка ответа (HWID-4, HWID-5)
+6. **`SIP008Updater.kt`** — отправка заголовков (HWID-4)
+7. **`global_preferences.xml`** + **`strings.xml`** — UI (HWID-6)
+8. **`SettingsPreferenceFragment.kt`** — привязать `hwidCurrent` (HWID-6)
+
+### Тесты HWID
+
+- [ ] **Unit** `DeviceId.get()`: приоритет кастомного → ANDROID_ID → fallback UUID
+- [ ] **Unit** `DeviceId.get()`: стабильность — повторный вызов возвращает тот же ID
+- [ ] **Интеграционный**: запрос подписки с mock-сервером — проверить наличие заголовков `x-hwid`, `x-device-os`, `x-ver-os`, `x-device-model`
+- [ ] **Интеграционный**: ответ `x-hwid-max-devices-reached: true` → проверить показ ошибки пользователю
